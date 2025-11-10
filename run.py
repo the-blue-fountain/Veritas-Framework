@@ -15,6 +15,7 @@ from datetime import datetime
 
 from generate_candidates import generate_candidates
 from generate_stress_candidates import generate_stress_candidates
+from generator import generate_tests
 from executor import (
     verify_sample_tests,
     build_stress_predicted_tests,
@@ -67,18 +68,31 @@ async def run_pipeline(problem_data: dict, output_dir: Path, num_candidates: int
     sample_tests = [(t['input'], t['output']) for t in problem_data.get('sample_tests', [])]
     additional_inputs = [t['input'] for t in problem_data.get('additional_tests', [])]
     
-    # Step 1: Generate candidates and stress candidates in parallel
-    print("\n[STEP 1] Generating candidates and stress candidates in parallel...")
+    # Step 1: Generate candidates; also generate extra test inputs to use for stress testing
+    print("\n[STEP 1] Generating candidates and extra test inputs for stress testing...")
     start_time = datetime.now()
-    
+
+    # generate extra test inputs (used by stress generation and later for stress-prediction)
+    gen_dir = output_dir / "generated_tests"
+    gen_task = generate_tests(problem_text, str(gen_dir), num=num_stress)
+
+    # generate candidate solutions in parallel with test generation
     cand_task = generate_candidates(problem_text, str(candidate_dir), num_candidates, model)
-    stress_task = generate_stress_candidates(problem_text, str(stress_dir), num_stress, model)
     
-    cand_count, stress_count = await asyncio.gather(cand_task, stress_task)
+    cand_count, gen_tests = await asyncio.gather(cand_task, gen_task)
+
+    # write generated tests into additional_inputs so stress and executor see them
+    generated_inputs = gen_tests or []
+    if generated_inputs:
+        additional_inputs.extend(generated_inputs)
+
+    # now generate stress candidates (can use generated tests indirectly via prompt if desired)
+    stress_task = generate_stress_candidates(problem_text, str(stress_dir), num_stress, model)
+    stress_count = await stress_task
     
     gen_time = (datetime.now() - start_time).total_seconds()
     print(f"\n  Generation completed in {gen_time:.2f}s")
-    print(f"  Candidates: {cand_count}, Stress: {stress_count}")
+    print(f"  Candidates: {cand_count}, Stress: {stress_count}, Generated tests: {len(generated_inputs)}")
     
     if cand_count == 0:
         print("\n❌ No candidates generated. Exiting.")
